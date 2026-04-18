@@ -1,0 +1,37 @@
+# Environment & secrets
+.env
+*.env
+.env.*
+*.sql
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+venv/
+.venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# Gmail credentials & tokens
+token.json
+credentials.json
+*.pickle
+*.token
+
+# One-off scripts (contain logic tied to personal data)
+backfill_*.py
+debug_*.py
+
+# Editor & OS
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude local settings
+.claude/

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fintual Portfolio</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <div id="toast" class="toast" style="display:none"></div>
+
+  <!-- Setup banner (visible when tables missing) -->
+  <div id="setup-banner" class="setup-banner" style="display:none">
+    <div class="setup-content">
+      <strong>&#x26A0; Configuración requerida</strong>
+      <span>Las tablas de Supabase no existen aún. Ejecuta el archivo <code>schema.sql</code> en el <a href="https://supabase.com" target="_blank">SQL Editor de Supabase</a> y recarga la página.</span>
+    </div>
+  </div>
+
+  <header>
+    <div class="header-left">
+      <span class="logo">&#x25B2;</span>
+      <h1>Fintual Portfolio</h1>
+    </div>
+    <div class="header-right">
+      <div id="status-indicators">
+        <span class="status-dot" id="db-status" title="Base de datos"></span>
+        <span class="status-dot" id="email-status" title="Gmail"></span>
+      </div>
+      <button class="btn-icon" id="theme-toggle" onclick="toggleTheme()" title="Cambiar tema">
+        <span id="theme-icon">☀️</span>
+      </button>
+      <span id="last-sync-label" class="last-sync-label" style="display:none"></span>
+      <button id="prices-btn" class="btn-secondary" onclick="refreshPrices()" title="Actualizar precios de mercado">
+        Actualizar precios
+      </button>
+      <button id="sync-btn" class="btn-primary" onclick="syncEmails()">
+        Sincronizar correos
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <div id="loading" class="loading-bar" style="display:none">
+      <div class="loading-inner"></div>
+    </div>
+
+    <!-- Summary Cards -->
+    <section class="cards">
+      <div class="card">
+        <div class="card-label">Total Invertido</div>
+        <div id="total-invested" class="card-value">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Valor Actual</div>
+        <div id="total-value" class="card-value">—</div>
+        <div id="total-value-note" class="card-note"></div>
+      </div>
+      <div class="card">
+        <div class="card-label">P&L No Realizado</div>
+        <div id="total-pnl" class="card-value">—</div>
+      </div>
+      <div class="card">
+        <div class="card-label">P&L Realizado</div>
+        <div id="realized-pnl" class="card-value">—</div>
+      </div>
+    </section>
+
+    <!-- Charts -->
+    <section class="charts-grid">
+      <div class="card chart-card">
+        <div class="card-label">Capital Invertido vs Valor Actual</div>
+        <div class="chart-wrap"><canvas id="chart-compare"></canvas></div>
+      </div>
+      <div class="card chart-card">
+        <div class="card-label">P&L por Posición</div>
+        <div class="chart-wrap"><canvas id="chart-bar"></canvas></div>
+      </div>
+    </section>
+
+    <!-- Holdings filters -->
+    <div class="holdings-filters">
+      <input id="holdings-search" class="search-input" type="text"
+             placeholder="Buscar empresa o ticker…" oninput="onHoldingsSearch()" />
+      <div class="filter-group">
+        <button class="filter-btn active" data-hfilter="all"     onclick="setHoldingsFilter('all')">Todas</button>
+        <button class="filter-btn"        data-hfilter="winners" onclick="setHoldingsFilter('winners')">Ganadoras</button>
+        <button class="filter-btn"        data-hfilter="losers"  onclick="setHoldingsFilter('losers')">Perdedoras</button>
+      </div>
+    </div>
+
+    <!-- Holdings -->
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Posiciones Abiertas</h2>
+        <span id="holdings-count" class="badge-count"></span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable" data-col="company_name" onclick="setSortCol('company_name')">Empresa <span class="sort-icon"></span></th>
+              <th class="sortable" data-col="ticker"       onclick="setSortCol('ticker')">Ticker <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="total_shares" onclick="setSortCol('total_shares')">Acciones <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="avg_cost"     onclick="setSortCol('avg_cost')">Costo Prom. <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="capital"      onclick="setSortCol('capital')">Capital Invertido <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="price"        onclick="setSortCol('price')">Precio Actual <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="curValue"     onclick="setSortCol('curValue')">Valor Actual <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="diff"         onclick="setSortCol('diff')">Diferencia <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="pnlPct"       onclick="setSortCol('pnlPct')">P&L % <span class="sort-icon"></span></th>
+            </tr>
+          </thead>
+          <tbody id="holdings-body">
+            <tr><td colspan="9" class="empty">Presiona "Sincronizar correos" para comenzar</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Transactions -->
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Historial de Transacciones</h2>
+        <div class="filter-group">
+          <button class="filter-btn active" data-filter="all">Todas</button>
+          <button class="filter-btn" data-filter="buy">Compras</button>
+          <button class="filter-btn" data-filter="sell">Ventas</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha</th>
+              <th>Tipo</th>
+              <th>Empresa</th>
+              <th>Ticker</th>
+              <th class="r">Acciones</th>
+              <th class="r">Precio/Acc.</th>
+              <th class="r">Monto USD</th>
+            </tr>
+          </thead>
+          <tbody id="tx-body">
+            <tr><td colspan="7" class="empty">Sin transacciones</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
