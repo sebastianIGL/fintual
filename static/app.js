@@ -1,9 +1,20 @@
 'use strict';
 
+let _watchlistView    = 'watchlist';
+let _watchlistData    = [];
+let _wlSortCol        = null;
+let _wlSortDir        = 1;
+let _wlQualView       = false;
+let _wlDivFilter      = false;
+let _entryScores      = [];
+let _signals          = [];
+
 let _transactions = [];
 let _portfolio    = [];
 let _prices       = {};
 let _currentFilter  = 'all';
+let _txPage         = 1;
+const TX_PAGE_SIZE  = 25;
 let _holdingsFilter = 'all';
 let _holdingsSearch = '';
 let _sortCol        = null;
@@ -42,12 +53,14 @@ function toggleTheme() {
 
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
+  initBlurButtons();
 
   document.querySelectorAll('.filter-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       _currentFilter = btn.dataset.filter;
+      _txPage = 1;
       renderTransactions();
     });
   });
@@ -459,10 +472,15 @@ function renderTransactions() {
 
   if (filtered.length === 0) {
     tbody.innerHTML = '<tr><td colspan="7" class="empty">Sin transacciones</td></tr>';
+    renderTxPaginator(0, 0);
     return;
   }
 
-  tbody.innerHTML = filtered.map(t => {
+  const totalPages = Math.ceil(filtered.length / TX_PAGE_SIZE);
+  _txPage = Math.min(_txPage, totalPages);
+  const page = filtered.slice((_txPage - 1) * TX_PAGE_SIZE, _txPage * TX_PAGE_SIZE);
+
+  tbody.innerHTML = page.map(t => {
     const isBuy = t.type === 'buy';
     return `<tr>
       <td>${fmtDate(t.date)}</td>
@@ -474,6 +492,32 @@ function renderTransactions() {
       <td class="r">${fmtUSD(t.amount_usd)}</td>
     </tr>`;
   }).join('');
+
+  renderTxPaginator(totalPages, filtered.length);
+}
+
+function renderTxPaginator(totalPages, total) {
+  const el = document.getElementById('tx-paginator');
+  if (totalPages <= 1) { el.innerHTML = ''; return; }
+
+  const prev = `<button class="page-btn" onclick="txGoTo(${_txPage - 1})" ${_txPage === 1 ? 'disabled' : ''}>‹</button>`;
+  const next = `<button class="page-btn" onclick="txGoTo(${_txPage + 1})" ${_txPage === totalPages ? 'disabled' : ''}>›</button>`;
+
+  const pages = [];
+  for (let i = 1; i <= totalPages; i++) {
+    if (i === 1 || i === totalPages || Math.abs(i - _txPage) <= 1) {
+      pages.push(`<button class="page-btn ${i === _txPage ? 'active' : ''}" onclick="txGoTo(${i})">${i}</button>`);
+    } else if (pages[pages.length - 1] !== '<span class="page-ellipsis">…</span>') {
+      pages.push('<span class="page-ellipsis">…</span>');
+    }
+  }
+
+  el.innerHTML = `<span class="page-info">${total} transacciones</span>${prev}${pages.join('')}${next}`;
+}
+
+function txGoTo(page) {
+  _txPage = page;
+  renderTransactions();
 }
 
 // ── Ticker editor ─────────────────────────────────────────────────────────────
@@ -493,7 +537,281 @@ async function promptTicker(company) {
   }
 }
 
+// ── Card blur toggle ──────────────────────────────────────────────────────────
+
+const EYE_OPEN = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF  = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="13" height="13"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+
+function initBlurButtons() {
+  document.querySelectorAll('.blur-btn').forEach(btn => {
+    const isBlurred = btn.closest('.card').querySelector('.card-body').classList.contains('blurred');
+    btn.innerHTML = isBlurred ? EYE_OFF : EYE_OPEN;
+    btn.title     = isBlurred ? 'Mostrar' : 'Ocultar';
+  });
+}
+
+function toggleBlur(btn) {
+  const body      = btn.closest('.card').querySelector('.card-body');
+  const isBlurred = body.classList.toggle('blurred');
+  btn.innerHTML   = isBlurred ? EYE_OFF : EYE_OPEN;
+  btn.title       = isBlurred ? 'Mostrar' : 'Ocultar';
+}
+
+// ── Tab navigation ────────────────────────────────────────────────────────────
+
+function switchTab(tab) {
+  document.getElementById('tab-futuro').style.display    = tab === 'futuro'    ? 'block' : 'none';
+  document.querySelector('main:not(#tab-futuro)').style.display = tab === 'portfolio' ? 'block' : 'none';
+  document.querySelectorAll('.tab-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.tab === tab)
+  );
+  if (tab === 'futuro') {
+    _loadCachedMlResults();
+    _loadWatchlistCached();
+  }
+}
+
+// ── Watchlist ─────────────────────────────────────────────────────────────────
+
+async function addToWatchlist() {
+  const input  = document.getElementById('wl-add-input');
+  const ticker = input.value.trim().toUpperCase();
+  if (!ticker) return;
+  input.disabled = true;
+  try {
+    const r = await api(`/api/watchlist/${encodeURIComponent(ticker)}`, { method: 'POST' });
+    toast(`${r.company_name} (${r.ticker}) agregado a la watchlist`, 'success');
+    input.value = '';
+    await loadWatchlistPrices();
+  } catch (e) {
+    toast('Error al agregar: ' + e.message, 'error');
+  } finally {
+    input.disabled = false;
+    input.focus();
+  }
+}
+
+async function removeFromWatchlist(ticker) {
+  try {
+    await api(`/api/watchlist/${encodeURIComponent(ticker)}`, { method: 'DELETE' });
+    _watchlistData = _watchlistData.filter(r => r.ticker !== ticker);
+    renderWatchlistTable();
+    toast(`${ticker} eliminado`, 'info');
+  } catch (e) {
+    toast('Error al eliminar: ' + e.message, 'error');
+  }
+}
+
+function toggleWlView() {
+  _wlQualView = !_wlQualView;
+  const btn = document.getElementById('wl-view-btn');
+  btn.textContent = _wlQualView ? 'Cualitativo' : 'Cuantitativo';
+  document.querySelectorAll('.col-quant').forEach(el =>
+    el.style.display = _wlQualView ? 'none' : ''
+  );
+  document.querySelectorAll('.col-qual').forEach(el =>
+    el.style.display = _wlQualView ? '' : 'none'
+  );
+  renderWatchlistTable();
+}
+
+function setWatchlistView(view) {
+  _watchlistView = view;
+  _watchlistData = [];
+  _wlSortCol     = null;
+  document.querySelectorAll('[data-wview]').forEach(b =>
+    b.classList.toggle('active', b.dataset.wview === view)
+  );
+  _loadWatchlistCached();
+}
+
+async function _loadWatchlistCached() {
+  if (_watchlistData.length > 0) return;
+  const tbody = document.getElementById('watchlist-body');
+  tbody.innerHTML = '<tr><td colspan="13" class="empty">Cargando desde base de datos…</td></tr>';
+  try {
+    const data = await api(`/api/watchlist/cached?view=${_watchlistView}`);
+    const dateEl = document.getElementById('wl-date');
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="13" class="empty">Sin datos — presiona "Actualizar datos" para descargar</td></tr>';
+      dateEl.style.display = 'none';
+      return;
+    }
+    if (data[0]?.date) {
+      dateEl.textContent   = fmtDate(data[0].date);
+      dateEl.style.display = 'inline';
+    }
+    _watchlistData = data;
+    renderWatchlistTable();
+  } catch (e) {
+    const tbody = document.getElementById('watchlist-body');
+    tbody.innerHTML = '<tr><td colspan="13" class="empty">Presiona "Actualizar datos" para cargar</td></tr>';
+  }
+}
+
+async function loadWatchlistPrices() {
+  // Show confirmation with last update date
+  const lastDate = _watchlistData.length > 0 && _watchlistData[0]?.date
+    ? `La última actualización fue el ${fmtDate(_watchlistData[0].date)}.`
+    : 'No hay datos previos.';
+  const confirmed = confirm(`¿Actualizar datos de precios desde Yahoo Finance?\n${lastDate}\n\nEsto puede tardar unos segundos.`);
+  if (!confirmed) return;
+
+  const btn = document.getElementById('wl-refresh-btn');
+  btn.disabled = true;
+  btn.textContent = 'Cargando…';
+  const tbody = document.getElementById('watchlist-body');
+  tbody.innerHTML = '<tr><td colspan="13" class="empty">Obteniendo datos de mercado…</td></tr>';
+  try {
+    const data = await api(`/api/watchlist/prices?view=${_watchlistView}`);
+    const dateEl = document.getElementById('wl-date');
+    if (!data.length) {
+      tbody.innerHTML = '<tr><td colspan="13" class="empty">Sin datos</td></tr>';
+      dateEl.style.display = 'none';
+      return;
+    }
+    if (data[0]?.date) {
+      dateEl.textContent   = fmtDate(data[0].date);
+      dateEl.style.display = 'inline';
+    }
+    _watchlistData = data;
+    renderWatchlistTable();
+  } catch (e) {
+    toast('Error al cargar watchlist: ' + e.message, 'error');
+    tbody.innerHTML = '<tr><td colspan="14" class="empty">Error al cargar datos</td></tr>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Actualizar datos';
+  }
+}
+
+function setWlSort(col) {
+  if (_wlSortCol === col) _wlSortDir *= -1;
+  else { _wlSortCol = col; _wlSortDir = 1; }
+  renderWatchlistTable();
+}
+
+function toggleWlDivFilter() {
+  _wlDivFilter = !_wlDivFilter;
+  const btn = document.getElementById('wl-div-btn');
+  if (btn) btn.classList.toggle('active', _wlDivFilter);
+  renderWatchlistTable();
+}
+
+function renderWatchlistTable() {
+  const tbody     = document.getElementById('watchlist-body');
+  const removable = _watchlistView === 'watchlist';
+
+  let rows = _wlDivFilter ? _watchlistData.filter(r => r.has_dividend) : [..._watchlistData];
+
+  if (_wlSortCol) {
+    rows.sort((a, b) => {
+      let va, vb;
+      switch (_wlSortCol) {
+        case 'company_name':   va = a.company_name   || ''; vb = b.company_name   || ''; break;
+        case 'ticker':         va = a.ticker          || ''; vb = b.ticker          || ''; break;
+        case 'recommendation': va = a.recommendation  || ''; vb = b.recommendation  || ''; break;
+        case 'price':    va = a.price    ?? -Infinity; vb = b.price    ?? -Infinity; break;
+        case 'close_1d': va = a.close_1d ?? -Infinity; vb = b.close_1d ?? -Infinity; break;
+        case 'close_2d': va = a.close_2d ?? -Infinity; vb = b.close_2d ?? -Infinity; break;
+        case 'close_3d': va = a.close_3d ?? -Infinity; vb = b.close_3d ?? -Infinity; break;
+        case 'close_4d': va = a.close_4d ?? -Infinity; vb = b.close_4d ?? -Infinity; break;
+        case 'close_5d': va = a.close_5d ?? -Infinity; vb = b.close_5d ?? -Infinity; break;
+        case 'min_30d':  va = a.min_30d  ?? -Infinity; vb = b.min_30d  ?? -Infinity; break;
+        case 'min_60d':  va = a.min_60d  ?? -Infinity; vb = b.min_60d  ?? -Infinity; break;
+        case 'min_90d':  va = a.min_90d  ?? -Infinity; vb = b.min_90d  ?? -Infinity; break;
+        default: return 0;
+      }
+      if (typeof va === 'string') return _wlSortDir * va.localeCompare(vb);
+      return _wlSortDir * (va - vb);
+    });
+  }
+
+  tbody.innerHTML = rows.map(r => {
+    const p        = r.price;
+    const recClass = recCls(r.recommendation);
+    const arrow    = priceArrow(r);
+    return `<tr>
+      <td>${removable ? `<button class="wl-remove" onclick="removeFromWatchlist('${esc(r.ticker)}')" title="Eliminar">×</button>` : ''}</td>
+      <td>${esc(r.company_name)}</td>
+      <td><span class="ticker-chip">${esc(r.ticker)}</span></td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}><strong>${fmtUSD(p)}</strong> ${arrow}</td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}>${fmtHistPrice(r.close_1d, p)}</td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}>${fmtHistPrice(r.close_2d, p)}</td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}>${fmtHistPrice(r.close_3d, p)}</td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}>${fmtHistPrice(r.close_4d, p)}</td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}>${fmtHistPrice(r.close_5d, p)}</td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}>${fmtHistPrice(r.min_30d, p)}</td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}>${fmtHistPrice(r.min_60d, p)}</td>
+      <td class="col-quant r" ${_wlQualView ? 'style="display:none"' : ''}>${fmtHistPrice(r.min_90d, p)}</td>
+      <td><span class="${recClass}">${esc(r.recommendation)}</span></td>
+      <td class="col-qual" ${!_wlQualView ? 'style="display:none"' : ''}>${esc(r.sector)}</td>
+      <td class="col-qual" ${!_wlQualView ? 'style="display:none"' : ''}>${esc(r.industry)}</td>
+      <td class="col-qual" ${!_wlQualView ? 'style="display:none"' : ''}>${esc(r.country)}</td>
+      <td class="col-qual r" ${!_wlQualView ? 'style="display:none"' : ''}>${r.market_cap ? fmtMarketCap(r.market_cap) : '—'}</td>
+      <td class="col-qual r" ${!_wlQualView ? 'style="display:none"' : ''}>${r.div_yield != null ? (r.div_yield * 100).toFixed(2) + '%' : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  // Update sort indicators
+  document.querySelectorAll('#tab-futuro th.sortable').forEach(th => {
+    const icon = th.querySelector('.sort-icon');
+    if (icon) icon.textContent = th.dataset.col === _wlSortCol ? (_wlSortDir === 1 ? '↑' : '↓') : '';
+  });
+}
+
+const ARROW_UP   = `<span class="price-arrow up" title="Precio subiendo">↑</span>`;
+const ARROW_DOWN = `<span class="price-arrow down" title="Precio bajando">↓</span>`;
+
+function priceArrow(r) {
+  const closes = [r.close_1d, r.close_2d, r.close_3d, r.close_4d, r.close_5d].filter(v => v != null);
+  if (!closes.length || !r.price) return '';
+  const rising  = closes.filter(v => v < r.price).length;
+  const falling = closes.filter(v => v > r.price).length;
+  if (rising > falling)  return ARROW_UP;
+  if (falling > rising)  return ARROW_DOWN;
+  return '';
+}
+
+function recCls(rec) {
+  if (!rec) return '';
+  const r = rec.toLowerCase();
+  if (r.includes('fuerte') && r.includes('compra')) return 'rec-strong-buy';
+  if (r.includes('compra')) return 'rec-buy';
+  if (r.includes('mantener')) return 'rec-hold';
+  if (r.includes('vend')) return 'rec-sell';
+  return '';
+}
+
+function fmtHistPrice(value, currentPrice) {
+  if (value === null || value === undefined) return '—';
+  const formatted = fmtUSD(value);
+  if (!currentPrice) return formatted;
+  const diff = (value - currentPrice) / currentPrice;
+
+  const pct    = parseFloat(((currentPrice - value) / value * 100).toFixed(2));
+  const why    = [{ label: 'Variación desde este cierre', value: pct }];
+  const enc    = encodeURIComponent(JSON.stringify(why));
+  const icon   = `<span class="close-pct-icon"
+    onmouseenter="mlShowTooltip(event,JSON.parse(decodeURIComponent('${enc}')))"
+    onmouseleave="mlHideTooltip()">i</span>`;
+
+  if (diff < -0.5) return `<span class="price-down-far">${formatted}</span>${icon}`;
+  if (diff < 0)    return `<span class="price-down">${formatted}</span>${icon}`;
+  if (diff > 0.5)  return `<span class="price-up-far">${formatted}</span>${icon}`;
+  if (diff > 0)    return `<span class="price-up">${formatted}</span>${icon}`;
+  return `${formatted}${icon}`;
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+const fmtMarketCap = n => {
+  if (n == null) return '—';
+  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
+  if (n >= 1e9)  return `$${(n / 1e9).toFixed(2)}B`;
+  if (n >= 1e6)  return `$${(n / 1e6).toFixed(2)}M`;
+  return `$${n}`;
+};
 
 const fmtUSD = n =>
   n == null ? '—' :
@@ -530,4 +848,244 @@ function toast(msg, type = 'info') {
   el.style.display = 'block';
   if (_toastTimer) clearTimeout(_toastTimer);
   _toastTimer = setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
+
+// ── ML: Tooltip global ───────────────────────────────────────────────────────
+
+const _mlTooltip = () => document.getElementById('ml-tooltip');
+
+const _FACTOR_DESC = {
+  'Dist. mínimo 30d':       '% por encima del mínimo de 30 días. Bajo = precio cerca del suelo reciente.',
+  'Dist. mínimo 60d':       '% por encima del mínimo de 60 días. Bajo = posible zona de acumulación.',
+  'Dist. mínimo 90d':       '% por encima del mínimo de 90 días. Bajo = cerca de soporte trimestral.',
+  'Momentum 5d':            'Cambio de precio en los últimos 5 días hábiles. Positivo = impulso alcista reciente.',
+  'Recomendación analistas':'Consenso de analistas según Yahoo Finance.',
+};
+
+function mlShowTooltip(event, why, probs) {
+  const el = _mlTooltip();
+  if (!el) return;
+  let html = '<div class="ml-tt-title">Factores del modelo</div>';
+  (why || []).forEach(w => {
+    const val = typeof w.value === 'number'
+      ? `<span class="ml-tt-val">${w.value > 0 ? '+' : ''}${w.value}%</span>`
+      : `<span class="ml-tt-val">${esc(String(w.value))}</span>`;
+    const desc = _FACTOR_DESC[w.label] || '';
+    html += `<div class="ml-tt-row">
+      <span class="ml-tt-label-wrap">
+        <span class="ml-tt-label">${esc(w.label)}</span>
+        ${desc ? `<span class="ml-tt-desc">${esc(desc)}</span>` : ''}
+      </span>${val}</div>`;
+  });
+  if (probs) {
+    html += '<div class="ml-tt-sep"></div><div class="ml-tt-title">Probabilidades</div>';
+    Object.entries(probs).forEach(([label, pct]) => {
+      html += `<div class="ml-tt-row"><span class="ml-tt-label">${esc(label)}</span><span class="ml-tt-val">${pct}%</span></div>`;
+    });
+  }
+  el.innerHTML = html;
+  el.style.display = 'block';
+  mlPositionTooltip(event);
+}
+
+function mlShowMetrics(event, metrics) {
+  const el = _mlTooltip();
+  if (!el || !metrics) return;
+  const pct = v => v != null ? (v * 100).toFixed(1) + '%' : '—';
+  const num = v => v != null ? v.toLocaleString() : '—';
+  let html = '<div class="ml-tt-title">Métricas del modelo (CV 3-fold)</div>';
+  html += `<div class="ml-tt-row"><span class="ml-tt-label">Accuracy</span><span class="ml-tt-val">${pct(metrics.accuracy_cv)} ± ${pct(metrics.accuracy_cv_std)}</span></div>`;
+  html += `<div class="ml-tt-row"><span class="ml-tt-label">Precisión (positiva)</span><span class="ml-tt-val">${pct(metrics.precision_buy)}</span></div>`;
+  html += `<div class="ml-tt-row"><span class="ml-tt-label">Recall (positiva)</span><span class="ml-tt-val">${pct(metrics.recall_buy)}</span></div>`;
+  html += `<div class="ml-tt-row"><span class="ml-tt-label">F1 (positiva)</span><span class="ml-tt-val">${pct(metrics.f1_buy)}</span></div>`;
+  html += '<div class="ml-tt-sep"></div>';
+  html += `<div class="ml-tt-row"><span class="ml-tt-label">Muestras entrenamiento</span><span class="ml-tt-val">${num(metrics.n_train)}</span></div>`;
+  html += `<div class="ml-tt-row"><span class="ml-tt-label">% días positivos</span><span class="ml-tt-val">${pct(metrics.pct_positive)}</span></div>`;
+  el.innerHTML = html;
+  el.style.display = 'block';
+  mlPositionTooltip(event);
+}
+
+function mlPositionTooltip(event) {
+  const el = _mlTooltip();
+  if (!el || el.style.display === 'none') return;
+  const x = event.clientX + 14;
+  const y = event.clientY - 10;
+  const rect = el.getBoundingClientRect();
+  el.style.left = (x + rect.width  > window.innerWidth  ? event.clientX - rect.width  - 14 : x) + 'px';
+  el.style.top  = (y + rect.height > window.innerHeight ? event.clientY - rect.height      : y) + 'px';
+}
+
+function mlHideTooltip() {
+  const el = _mlTooltip();
+  if (el) el.style.display = 'none';
+}
+
+document.addEventListener('mousemove', e => {
+  if (e.target.closest('.ml-info') || e.target.closest('.ml-metrics-icon')) mlPositionTooltip(e);
+});
+
+// ── ML: helpers ──────────────────────────────────────────────────────────────
+
+function _fmtRunAt(iso) {
+  if (!iso) return '';
+  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60)   return 'hace un momento';
+  if (diff < 3600) return `hace ${Math.floor(diff / 60)} min`;
+  const days = Math.floor(diff / 86400);
+  if (days === 0)  return `hace ${Math.floor(diff / 3600)}h`;
+  if (days === 1)  return 'hace 1 día';
+  return `hace ${days} días`;
+}
+
+function _setMlHeader(cardId, runAt, metrics) {
+  const badge = document.getElementById(`${cardId}-badge`);
+  const mIcon = document.getElementById(`${cardId}-metrics`);
+  if (badge) badge.textContent = runAt ? _fmtRunAt(runAt) : '';
+  if (mIcon && metrics) {
+    mIcon.style.display = 'inline-flex';
+    mIcon.onmouseenter = e => mlShowMetrics(e, metrics);
+    mIcon.onmouseleave = mlHideTooltip;
+  }
+}
+
+function _applyMlResponse(model, data) {
+  if (model === 'entry_score') {
+    _entryScores = data.results || [];
+    _setMlHeader('entry-score', data.run_at, data.metrics);
+    renderEntryScoreCard();
+  } else {
+    _signals = data.results || [];
+    _setMlHeader('signal', data.run_at, data.metrics);
+    renderSignalTable();
+  }
+}
+
+async function _loadCachedMlResults() {
+  try {
+    const [es, sig] = await Promise.all([
+      fetch('/api/ml/entry-score').then(r => r.ok ? r.json() : null),
+      fetch('/api/ml/signal').then(r => r.ok ? r.json() : null),
+    ]);
+    if (es  && es.results?.length)  _applyMlResponse('entry_score', es);
+    if (sig && sig.results?.length) _applyMlResponse('signal', sig);
+  } catch (_) { /* silent — user can recalculate */ }
+}
+
+// ── ML: Modelo 1 – Entry Point Score ─────────────────────────────────────────
+
+async function runEntryScore() {
+  const btn     = document.getElementById('entry-score-btn');
+  const content = document.getElementById('entry-score-content');
+  btn.disabled  = true;
+  btn.textContent = 'Entrenando…';
+  content.className = 'ml-loading';
+  content.innerHTML = '⏳ Descargando datos históricos y entrenando modelo… puede tardar ~45 segundos.';
+  try {
+    const res = await fetch(`/api/ml/entry-score?view=${_watchlistView}`, { method: 'POST' });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.detail || res.statusText); }
+    _applyMlResponse('entry_score', await res.json());
+  } catch (e) {
+    content.className = 'ml-error';
+    content.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Recalcular';
+  }
+}
+
+function renderEntryScoreCard() {
+  const content = document.getElementById('entry-score-content');
+  if (!_entryScores.length) {
+    content.className = 'ml-placeholder';
+    content.textContent = 'Sin resultados';
+    return;
+  }
+  content.className = '';
+
+  const rows = _entryScores.map(r => {
+    const s     = r.score ?? 0;
+    const color = s >= 65 ? 'var(--green)' : s >= 40 ? '#e3b341' : 'var(--red)';
+    const bg    = s >= 65 ? 'rgba(63,185,80,0.12)' : s >= 40 ? 'rgba(227,179,65,0.12)' : 'rgba(248,81,73,0.12)';
+    const why   = r.why || [];
+    const whyEnc = encodeURIComponent(JSON.stringify(why));
+    return `<div class="score-row">
+      <span class="score-label">${esc(r.ticker)}</span>
+      <div class="score-track">
+        <div class="score-fill" style="width:${s}%;background:${color};box-shadow:0 0 6px ${color}44"></div>
+        <div class="score-fill-bg" style="background:${bg}"></div>
+      </div>
+      <span class="score-num" style="color:${color}">${s}</span>
+      <span class="ml-info"
+        onmouseenter="mlShowTooltip(event,JSON.parse(decodeURIComponent('${whyEnc}')))"
+        onmouseleave="mlHideTooltip()">ℹ</span>
+    </div>`;
+  }).join('');
+
+  content.innerHTML = `<div class="score-list">${rows}</div>
+    <div class="ml-legend">
+      <span class="ml-legend-dot" style="background:var(--green)"></span>≥65 Buen punto
+      <span class="ml-legend-dot" style="background:#e3b341"></span>40–64 Neutral
+      <span class="ml-legend-dot" style="background:var(--red)"></span>&lt;40 Evitar
+    </div>`;
+}
+
+// ── ML: Modelo 2 – Señal de Posición ─────────────────────────────────────────
+
+async function runSignal() {
+  const btn     = document.getElementById('signal-btn');
+  const content = document.getElementById('signal-content');
+  btn.disabled  = true;
+  btn.textContent = 'Entrenando…';
+  content.className = 'ml-loading';
+  content.innerHTML = '⏳ Descargando datos históricos y entrenando modelo… puede tardar ~45 segundos.';
+  try {
+    const res = await fetch(`/api/ml/signal?view=${_watchlistView}`, { method: 'POST' });
+    if (!res.ok) { const d = await res.json(); throw new Error(d.detail || res.statusText); }
+    _applyMlResponse('signal', await res.json());
+  } catch (e) {
+    content.className = 'ml-error';
+    content.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Recalcular';
+  }
+}
+
+function renderSignalTable() {
+  const content = document.getElementById('signal-content');
+  if (!_signals.length) {
+    content.className = 'ml-placeholder';
+    content.textContent = 'Sin resultados';
+    return;
+  }
+  content.className = '';
+
+  const sigClass = key => key === 'buy' ? 'rec-strong-buy' : key === 'sell' ? 'rec-strong-sell' : 'rec-hold';
+
+  const rows = _signals.map(r => {
+    const why   = r.why   || [];
+    const probs = r.probs || null;
+    const whyEnc   = encodeURIComponent(JSON.stringify(why));
+    const probsEnc = encodeURIComponent(JSON.stringify(probs));
+    const confColor = (r.confidence||0) >= 60 ? 'var(--green)' : (r.confidence||0) >= 45 ? '#e3b341' : 'var(--red)';
+    return `<tr>
+      <td><span class="ticker-chip">${esc(r.ticker)}</span></td>
+      <td><span class="${sigClass(r.signal_key)}">${esc(r.signal)}</span></td>
+      <td class="r" style="color:${confColor};font-weight:600">${r.confidence ?? '—'}%</td>
+      <td class="r">
+        <span class="ml-info"
+          onmouseenter="mlShowTooltip(event,JSON.parse(decodeURIComponent('${whyEnc}')),JSON.parse(decodeURIComponent('${probsEnc}')))"
+          onmouseleave="mlHideTooltip()">ℹ</span>
+      </td>
+    </tr>`;
+  }).join('');
+
+  content.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr>
+      <th>Ticker</th><th>Señal</th>
+      <th class="r">Confianza</th><th class="r"></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
 }

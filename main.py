@@ -16,12 +16,19 @@ from database import (
     set_last_sync,
     get_cached_prices,
     set_cached_prices,
+    get_watchlist,
+    ensure_watchlist,
     setup_tables,
+    get_price_history_ticker,
+    upsert_price_history,
+    save_ml_run,
+    get_latest_ml_run,
 )
 from gmail_client import fetch_fintual_emails, test_connection
 from datetime import datetime, timezone
 from email_parser import parse_buy_email, parse_sell_email, parse_old_buy_email
 from stock_service import search_ticker, get_prices_bulk
+from watchlist_service import derive_watchlist_data, INITIAL_WATCHLIST
 
 load_dotenv()
 
@@ -228,6 +235,246 @@ def refresh_prices():
         return {"ok": True, "updated": len(prices), "prices": prices}
     except Exception as e:
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _portfolio_shares(transactions: list) -> dict:
+    shares = {}
+    for t in transactions:
+        ticker = t.get("ticker")
+        if not ticker:
+            continue
+        s = float(t.get("shares") or 0)
+        shares[ticker] = shares.get(ticker, 0) + (s if t["type"] == "buy" else -s)
+    return shares
+
+
+@app.get("/api/watchlist/cached")
+def watchlist_cached(view: str = "watchlist"):
+    """
+    Fast path: reads from Supabase. Downloads only tickers with zero prior data
+    (e.g. portfolio stocks never seen before). Already-cached tickers are never re-downloaded.
+    """
+    import yfinance as yf
+    import pandas as pd
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        client  = get_client()
+        tickers = _get_tickers_for_view(view, client)
+        if not tickers:
+            return []
+
+        # Read all cached data in parallel
+        with ThreadPoolExecutor(max_workers=min(len(tickers), 10)) as ex:
+            cached_map = dict(zip(tickers, ex.map(lambda t: get_price_history_ticker(client, t), tickers)))
+
+        closes_dict  = {}
+        need_download = []
+        for ticker in tickers:
+            cached = cached_map[ticker]
+            if len(cached) >= 2:
+                closes_dict[ticker] = cached
+            else:
+                need_download.append(ticker)
+
+        # First-time download for tickers with no data at all
+        if need_download:
+            hist = yf.download(need_download, period="2y", progress=False, auto_adjust=True)
+            if not hist.empty:
+                close_df = hist["Close"]
+                if isinstance(close_df, pd.Series):
+                    close_df = close_df.to_frame(name=need_download[0])
+                for ticker in need_download:
+                    if ticker not in close_df.columns:
+                        continue
+                    closes = close_df[ticker].dropna()
+                    if not closes.empty:
+                        upsert_price_history(client, ticker, closes)
+                        closes_dict[ticker] = closes
+
+        return derive_watchlist_data(tickers, closes_dict)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/watchlist/prices")
+def watchlist_prices(view: str = "watchlist"):
+    try:
+        client      = get_client()
+        tickers     = _get_tickers_for_view(view, client)
+        closes_dict = _load_closes(client, tickers, force_update=True)
+        return derive_watchlist_data(tickers, closes_dict)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/watchlist/{ticker}")
+def add_watchlist(ticker: str):
+    import yfinance as yf
+    ticker = ticker.upper().strip()
+    try:
+        info = yf.Ticker(ticker).info
+        company_name = info.get("shortName") or info.get("longName") or ticker
+    except Exception:
+        company_name = ticker
+    client = get_client()
+    client.table("watchlist").upsert(
+        {"ticker": ticker, "company_name": company_name},
+        on_conflict="ticker",
+    ).execute()
+    return {"ok": True, "ticker": ticker, "company_name": company_name}
+
+
+@app.delete("/api/watchlist/{ticker}")
+def remove_watchlist(ticker: str):
+    client = get_client()
+    client.table("watchlist").delete().eq("ticker", ticker.upper()).execute()
+    return {"ok": True}
+
+
+def _get_tickers_for_view(view: str, client) -> list:
+    ensure_watchlist(client, INITIAL_WATCHLIST)
+    transactions = get_all_transactions(client)
+    port_shares  = _portfolio_shares(transactions)
+    if view == "portfolio":
+        return [t for t, s in port_shares.items() if s > 0]
+    wl = get_watchlist(client)
+    return [w["ticker"] for w in wl if port_shares.get(w["ticker"], 0) <= 1.5]
+
+
+def _load_closes(client, tickers: list, force_update: bool = False) -> dict:
+    """
+    Load closes from Supabase for each ticker.
+    force_update=True  → always try incremental download (used by watchlist display).
+    force_update=False → skip download if data is <7 days old (used by ML).
+    Returns dict {ticker: pd.Series with DatetimeIndex}.
+    """
+    import yfinance as yf
+    import pandas as pd
+    from datetime import date, timedelta
+    from concurrent.futures import ThreadPoolExecutor
+
+    today = date.today()
+
+    # 1. Read all cached data from Supabase in parallel
+    with ThreadPoolExecutor(max_workers=min(len(tickers), 10)) as ex:
+        cached_map = dict(zip(tickers, ex.map(lambda t: get_price_history_ticker(client, t), tickers)))
+
+    closes_dict = {}
+    need_full = []       # tickers with no history → full 2-year download
+    need_incr = {}       # ticker → start date for incremental download
+
+    for ticker in tickers:
+        cached = cached_map[ticker]
+        if len(cached) >= 100:
+            latest   = cached.index[-1].date()
+            days_old = (today - latest).days
+            if days_old == 0 or (not force_update and days_old <= 7):
+                closes_dict[ticker] = cached
+            else:
+                need_incr[ticker] = latest + timedelta(days=1)
+        else:
+            need_full.append(ticker)
+
+    # 2. Bulk full download (all new tickers in one request)
+    if need_full:
+        hist = yf.download(need_full, period="2y", progress=False, auto_adjust=True)
+        if not hist.empty:
+            close_df = hist["Close"]
+            if isinstance(close_df, pd.Series):
+                close_df = close_df.to_frame(name=need_full[0])
+            for ticker in need_full:
+                if ticker not in close_df.columns:
+                    continue
+                closes = close_df[ticker].dropna()
+                if not closes.empty:
+                    upsert_price_history(client, ticker, closes)
+                    closes_dict[ticker] = closes
+
+    # 3. Bulk incremental download (all stale tickers in one request, from earliest start date)
+    if need_incr:
+        min_start = min(need_incr.values())
+        hist = yf.download(list(need_incr.keys()), start=str(min_start), progress=False, auto_adjust=True)
+        if not hist.empty:
+            close_df = hist["Close"]
+            if isinstance(close_df, pd.Series):
+                close_df = close_df.to_frame(name=list(need_incr.keys())[0])
+            for ticker, start in need_incr.items():
+                cached = cached_map[ticker]
+                if ticker not in close_df.columns:
+                    closes_dict[ticker] = cached
+                    continue
+                new_c = close_df[ticker].loc[str(start):].dropna()
+                if not new_c.empty:
+                    upsert_price_history(client, ticker, new_c)
+                    cached = pd.concat([cached, new_c]).sort_index()
+                closes_dict[ticker] = cached
+
+    return closes_dict
+
+
+@app.post("/api/ml/entry-score")
+def ml_entry_score(view: str = "watchlist"):
+    try:
+        from ml_service import run_entry_score
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Ejecuta: pip install scikit-learn")
+    try:
+        client      = get_client()
+        tickers     = _get_tickers_for_view(view, client)
+        closes_dict = _load_closes(client, tickers, force_update=False)
+        wl_data     = derive_watchlist_data(tickers, closes_dict)
+        results, metrics = run_entry_score(wl_data, closes_dict)
+        run_at      = save_ml_run(client, "entry_score", results, metrics)
+        return {"results": results, "metrics": metrics, "run_at": run_at}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/ml/signal")
+def ml_signal(view: str = "watchlist"):
+    try:
+        from ml_service import run_signal
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Ejecuta: pip install scikit-learn")
+    try:
+        client      = get_client()
+        tickers     = _get_tickers_for_view(view, client)
+        closes_dict = _load_closes(client, tickers, force_update=False)
+        wl_data     = derive_watchlist_data(tickers, closes_dict)
+        results, metrics = run_signal(wl_data, closes_dict)
+        run_at      = save_ml_run(client, "signal", results, metrics)
+        return {"results": results, "metrics": metrics, "run_at": run_at}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ml/entry-score")
+def ml_entry_score_cached():
+    try:
+        client = get_client()
+        results, metrics, run_at = get_latest_ml_run(client, "entry_score")
+        if not results:
+            return {"results": [], "metrics": None, "run_at": None}
+        # sort by score desc
+        results.sort(key=lambda x: (x.get("score") or 0), reverse=True)
+        return {"results": results, "metrics": metrics, "run_at": run_at}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/ml/signal")
+def ml_signal_cached():
+    try:
+        client = get_client()
+        results, metrics, run_at = get_latest_ml_run(client, "signal")
+        if not results:
+            return {"results": [], "metrics": None, "run_at": None}
+        return {"results": results, "metrics": metrics, "run_at": run_at}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

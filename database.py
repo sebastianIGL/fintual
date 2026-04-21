@@ -105,7 +105,104 @@ def set_last_sync(client: Client, iso_datetime: str):
         pass
 
 
+def get_watchlist(client: Client) -> list:
+    result = client.table("watchlist").select("*").order("added_at").execute()
+    return result.data
+
+
+def ensure_watchlist(client: Client, initial_tickers: list):
+    existing = client.table("watchlist").select("ticker").execute()
+    if not existing.data:
+        client.table("watchlist").insert(
+            [{"ticker": t} for t in initial_tickers]
+        ).execute()
+
+
 def setup_tables(client: Client):
     schema = open("schema.sql").read()
     # Supabase anon key can't run DDL directly — raise to let caller handle
     raise RuntimeError("DDL requires running schema.sql manually in Supabase SQL Editor")
+
+
+# ── ML: price_history ─────────────────────────────────────────────────────────
+
+def get_price_history_ticker(client: Client, ticker: str):
+    """Returns pd.Series with DatetimeIndex of daily closes, or empty Series."""
+    import pandas as pd
+    res = (
+        client.table("price_history")
+        .select("date,close")
+        .eq("ticker", ticker)
+        .order("date")
+        .execute()
+    )
+    if not res.data:
+        return pd.Series(dtype=float)
+    idx  = pd.to_datetime([r["date"] for r in res.data])
+    vals = [float(r["close"]) for r in res.data]
+    return pd.Series(vals, index=idx)
+
+
+def upsert_price_history(client: Client, ticker: str, closes):
+    """Upsert daily closes for a ticker (closes is pd.Series with DatetimeIndex)."""
+    rows = [
+        {"ticker": ticker, "date": str(idx.date()), "close": float(c)}
+        for idx, c in closes.items()
+    ]
+    if rows:
+        client.table("price_history").upsert(rows, on_conflict="ticker,date").execute()
+
+
+# ── ML: ml_results + ml_metrics ──────────────────────────────────────────────
+
+def save_ml_run(client: Client, model: str, results: list, metrics: dict) -> str:
+    """Insert results and metrics for a model run. Returns run_at ISO string."""
+    from datetime import datetime, timezone
+    run_at = datetime.now(timezone.utc).isoformat()
+
+    rows = []
+    for r in results:
+        row = {"run_at": run_at, "model": model, "ticker": r["ticker"], "why": r.get("why")}
+        if model == "entry_score":
+            row["score"] = r.get("score")
+        else:
+            row["signal"]     = r.get("signal")
+            row["signal_key"] = r.get("signal_key")
+            row["confidence"] = r.get("confidence")
+            row["probs"]      = r.get("probs")
+        rows.append(row)
+    if rows:
+        client.table("ml_results").insert(rows).execute()
+
+    if metrics:
+        client.table("ml_metrics").insert({"run_at": run_at, "model": model, **metrics}).execute()
+
+    return run_at
+
+
+def get_latest_ml_run(client: Client, model: str) -> tuple:
+    """Returns (results_list, metrics_dict, run_at_str) for the latest run, or ([], None, None)."""
+    res = (
+        client.table("ml_results")
+        .select("*")
+        .eq("model", model)
+        .order("run_at", desc=True)
+        .limit(200)
+        .execute()
+    )
+    if not res.data:
+        return [], None, None
+
+    latest_at = res.data[0]["run_at"]
+    results   = [r for r in res.data if r["run_at"] == latest_at]
+
+    metrics_res = (
+        client.table("ml_metrics")
+        .select("*")
+        .eq("model", model)
+        .order("run_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    metrics = metrics_res.data[0] if metrics_res.data else None
+    return results, metrics, latest_at

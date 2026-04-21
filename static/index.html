@@ -41,6 +41,11 @@
     </div>
   </header>
 
+  <nav class="tab-nav">
+    <button class="tab-btn active" data-tab="portfolio" onclick="switchTab('portfolio')">Portafolio</button>
+    <button class="tab-btn"        data-tab="futuro"    onclick="switchTab('futuro')">Futuro</button>
+  </nav>
+
   <main>
     <div id="loading" class="loading-bar" style="display:none">
       <div class="loading-inner"></div>
@@ -49,21 +54,41 @@
     <!-- Summary Cards -->
     <section class="cards">
       <div class="card">
-        <div class="card-label">Total Invertido</div>
-        <div id="total-invested" class="card-value">—</div>
+        <div class="card-top">
+          <div class="card-label">Total Invertido</div>
+          <button class="blur-btn" onclick="toggleBlur(this)"></button>
+        </div>
+        <div class="card-body blurred">
+          <div id="total-invested" class="card-value">—</div>
+        </div>
       </div>
       <div class="card">
-        <div class="card-label">Valor Actual</div>
-        <div id="total-value" class="card-value">—</div>
-        <div id="total-value-note" class="card-note"></div>
+        <div class="card-top">
+          <div class="card-label">Valor Actual</div>
+          <button class="blur-btn" onclick="toggleBlur(this)"></button>
+        </div>
+        <div class="card-body blurred">
+          <div id="total-value" class="card-value">—</div>
+          <div id="total-value-note" class="card-note"></div>
+        </div>
       </div>
       <div class="card">
-        <div class="card-label">P&L No Realizado</div>
-        <div id="total-pnl" class="card-value">—</div>
+        <div class="card-top">
+          <div class="card-label">P&L No Realizado</div>
+          <button class="blur-btn" onclick="toggleBlur(this)"></button>
+        </div>
+        <div class="card-body">
+          <div id="total-pnl" class="card-value">—</div>
+        </div>
       </div>
       <div class="card">
-        <div class="card-label">P&L Realizado</div>
-        <div id="realized-pnl" class="card-value">—</div>
+        <div class="card-top">
+          <div class="card-label">P&L Realizado</div>
+          <button class="blur-btn" onclick="toggleBlur(this)"></button>
+        </div>
+        <div class="card-body blurred">
+          <div id="realized-pnl" class="card-value">—</div>
+        </div>
       </div>
     </section>
 
@@ -146,8 +171,112 @@
           </tbody>
         </table>
       </div>
+      <div id="tx-paginator" class="paginator"></div>
     </section>
   </main>
+
+  <!-- ── Futuro ──────────────────────────────────────────────────────────── -->
+  <main id="tab-futuro" style="display:none">
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Análisis de Precio <span id="wl-date" class="badge-count" style="display:none"></span></h2>
+        <div style="display:flex;gap:10px;align-items:center">
+          <div class="wl-add-group">
+            <input id="wl-add-input" class="search-input" type="text"
+                   placeholder="Agregar ticker…"
+                   onkeydown="if(event.key==='Enter') addToWatchlist()" />
+            <button class="btn-add-wl" onclick="addToWatchlist()">+ Agregar</button>
+          </div>
+          <div class="filter-group">
+            <button class="filter-btn active" data-wview="watchlist" onclick="setWatchlistView('watchlist')">Watchlist</button>
+            <button class="filter-btn"        data-wview="portfolio" onclick="setWatchlistView('portfolio')">Portafolio</button>
+          </div>
+          <button id="wl-view-btn" class="btn-secondary" onclick="toggleWlView()" title="Cambiar vista">Cuantitativo</button>
+          <button id="wl-div-btn" class="btn-secondary" onclick="toggleWlDivFilter()" title="Mostrar solo con dividendo">Dividendo</button>
+          <button id="wl-refresh-btn" class="btn-secondary" onclick="loadWatchlistPrices()">Actualizar datos</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th class="sortable" data-col="company_name"   onclick="setWlSort('company_name')">Empresa <span class="sort-icon"></span></th>
+              <th class="sortable" data-col="ticker"         onclick="setWlSort('ticker')">Ticker <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="price"        onclick="setWlSort('price')">Precio Actual <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="close_1d"     onclick="setWlSort('close_1d')">Cierre -1d <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="close_2d"     onclick="setWlSort('close_2d')">Cierre -2d <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="close_3d"     onclick="setWlSort('close_3d')">Cierre -3d <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="close_4d"     onclick="setWlSort('close_4d')">Cierre -4d <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="close_5d"     onclick="setWlSort('close_5d')">Cierre -5d <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="min_30d"      onclick="setWlSort('min_30d')">Mín 30d <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="min_60d"      onclick="setWlSort('min_60d')">Mín 60d <span class="sort-icon"></span></th>
+              <th class="sortable col-quant r" data-col="min_90d"      onclick="setWlSort('min_90d')">Mín 90d <span class="sort-icon"></span></th>
+              <th class="sortable"   data-col="recommendation" onclick="setWlSort('recommendation')">Recomendación <span class="sort-icon"></span></th>
+              <!-- Columnas cualitativas (ocultas por defecto) -->
+              <th class="col-qual" style="display:none" data-col="sector"   onclick="setWlSort('sector')">Sector <span class="sort-icon"></span></th>
+              <th class="col-qual" style="display:none" data-col="industry" onclick="setWlSort('industry')">Industria <span class="sort-icon"></span></th>
+              <th class="col-qual" style="display:none" data-col="country"  onclick="setWlSort('country')">País <span class="sort-icon"></span></th>
+              <th class="col-qual r" style="display:none" data-col="market_cap" onclick="setWlSort('market_cap')">Market Cap <span class="sort-icon"></span></th>
+              <th class="col-qual r" style="display:none" data-col="div_yield"  onclick="setWlSort('div_yield')">Div. Yield <span class="sort-icon"></span></th>
+            </tr>
+          </thead>
+          <tbody id="watchlist-body">
+            <tr><td colspan="13" class="empty">Presiona "Actualizar datos" para cargar</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <!-- ── ML Models ──────────────────────────────────────────────────────── -->
+    <div class="ml-grid">
+
+      <!-- Modelo 1: Entry Point Score -->
+      <section class="panel ml-card">
+        <div class="panel-header">
+          <div class="ml-header-left">
+            <div class="ml-title-row">
+              <h2>Entry Point Score</h2>
+              <span class="ml-metrics-icon" id="entry-score-metrics" style="display:none"
+                onmouseleave="mlHideTooltip()">ℹ</span>
+            </div>
+            <span class="ml-subtitle">Random Forest · horizonte 20d · umbral +3%</span>
+          </div>
+          <div class="ml-header-right">
+            <span class="ml-last-calc" id="entry-score-badge"></span>
+            <button class="btn-secondary ml-calc-btn" id="entry-score-btn" onclick="runEntryScore()">Calcular</button>
+          </div>
+        </div>
+        <div id="entry-score-content" class="ml-placeholder">
+          Presiona "Calcular" para entrenar y ejecutar el modelo
+        </div>
+      </section>
+
+      <!-- Modelo 2: Señal de Posición -->
+      <section class="panel ml-card">
+        <div class="panel-header">
+          <div class="ml-header-left">
+            <div class="ml-title-row">
+              <h2>Señal de Posición</h2>
+              <span class="ml-metrics-icon" id="signal-metrics" style="display:none"
+                onmouseleave="mlHideTooltip()">ℹ</span>
+            </div>
+            <span class="ml-subtitle">Logistic Regression · horizonte 30d · Comprar / Mantener / Vender</span>
+          </div>
+          <div class="ml-header-right">
+            <span class="ml-last-calc" id="signal-badge"></span>
+            <button class="btn-secondary ml-calc-btn" id="signal-btn" onclick="runSignal()">Calcular</button>
+          </div>
+        </div>
+        <div id="signal-content" class="ml-placeholder">
+          Presiona "Calcular" para entrenar y ejecutar el modelo
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <!-- Tooltip global para modelos ML -->
+  <div id="ml-tooltip" class="ml-tooltip" style="display:none"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <script src="/static/app.js"></script>
