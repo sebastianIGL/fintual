@@ -6,6 +6,7 @@ let _wlSortCol        = null;
 let _wlSortDir        = 1;
 let _wlQualView       = false;
 let _wlDivFilter      = false;
+let _wlQualLoaded     = false;
 let _entryScores      = [];
 let _signals          = [];
 
@@ -559,15 +560,22 @@ function toggleBlur(btn) {
 
 // ── Tab navigation ────────────────────────────────────────────────────────────
 
+const _TABS = ['portfolio', 'futuro', 'oportunidades'];
+
 function switchTab(tab) {
-  document.getElementById('tab-futuro').style.display    = tab === 'futuro'    ? 'block' : 'none';
-  document.querySelector('main:not(#tab-futuro)').style.display = tab === 'portfolio' ? 'block' : 'none';
+  _TABS.forEach(t => {
+    const el = document.getElementById('tab-' + t);
+    if (el) el.style.display = t === tab ? 'block' : 'none';
+  });
   document.querySelectorAll('.tab-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.tab === tab)
   );
   if (tab === 'futuro') {
     _loadCachedMlResults();
     _loadWatchlistCached();
+  }
+  if (tab === 'oportunidades') {
+    _initScreener();
   }
 }
 
@@ -612,6 +620,29 @@ function toggleWlView() {
   document.querySelectorAll('.col-qual').forEach(el =>
     el.style.display = _wlQualView ? '' : 'none'
   );
+  // Lazy-load qualitative data (sector, recommendation, etc.) on first toggle
+  if (_wlQualView && !_wlQualLoaded && _watchlistData.length > 0) {
+    _loadWatchlistQual();
+    return;
+  }
+  renderWatchlistTable();
+}
+
+async function _loadWatchlistQual() {
+  const btn = document.getElementById('wl-view-btn');
+  btn.disabled = true;
+  try {
+    const qualMap = await api(`/api/watchlist/qual?view=${_watchlistView}`);
+    _watchlistData = _watchlistData.map(r => {
+      const q = qualMap[r.ticker];
+      return q ? { ...r, ...q } : r;
+    });
+    _wlQualLoaded = true;
+  } catch (e) {
+    toast('Error al cargar datos cualitativos: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
   renderWatchlistTable();
 }
 
@@ -619,6 +650,7 @@ function setWatchlistView(view) {
   _watchlistView = view;
   _watchlistData = [];
   _wlSortCol     = null;
+  _wlQualLoaded  = false;
   document.querySelectorAll('[data-wview]').forEach(b =>
     b.classList.toggle('active', b.dataset.wview === view)
   );
@@ -630,29 +662,46 @@ async function _loadWatchlistCached() {
   const tbody = document.getElementById('watchlist-body');
   tbody.innerHTML = '<tr><td colspan="13" class="empty">Cargando desde base de datos…</td></tr>';
   try {
-    const data = await api(`/api/watchlist/cached?view=${_watchlistView}`);
+    const data = await api(`/api/watchlist/cached?view=${_watchlistView}&qual=false`);
     const dateEl = document.getElementById('wl-date');
     if (!data.length) {
       tbody.innerHTML = '<tr><td colspan="13" class="empty">Sin datos — presiona "Actualizar datos" para descargar</td></tr>';
       dateEl.style.display = 'none';
       return;
     }
-    if (data[0]?.date) {
-      dateEl.textContent   = fmtDate(data[0].date);
+    const maxDate = data.reduce((mx, r) => r.date > mx ? r.date : mx, '');
+    if (maxDate) {
+      dateEl.textContent   = fmtDate(maxDate);
       dateEl.style.display = 'inline';
     }
     _watchlistData = data;
     renderWatchlistTable();
+    _loadLivePrices();
   } catch (e) {
     const tbody = document.getElementById('watchlist-body');
     tbody.innerHTML = '<tr><td colspan="13" class="empty">Presiona "Actualizar datos" para cargar</td></tr>';
   }
 }
 
+async function _loadLivePrices() {
+  try {
+    const live = await api(`/api/watchlist/live?view=${_watchlistView}`);
+    if (!live || Object.keys(live).length === 0) return;
+    _watchlistData = _watchlistData.map(r =>
+      live[r.ticker] !== undefined ? { ...r, price: live[r.ticker] } : r
+    );
+    renderWatchlistTable();
+  } catch (_) {
+    // live prices are best-effort — cached price remains visible
+  }
+}
+
 async function loadWatchlistPrices() {
-  // Show confirmation with last update date
-  const lastDate = _watchlistData.length > 0 && _watchlistData[0]?.date
-    ? `La última actualización fue el ${fmtDate(_watchlistData[0].date)}.`
+  const maxDate = _watchlistData.length > 0
+    ? _watchlistData.reduce((mx, r) => r.date > mx ? r.date : mx, '')
+    : '';
+  const lastDate = maxDate
+    ? `La última actualización fue el ${fmtDate(maxDate)}.`
     : 'No hay datos previos.';
   const confirmed = confirm(`¿Actualizar datos de precios desde Yahoo Finance?\n${lastDate}\n\nEsto puede tardar unos segundos.`);
   if (!confirmed) return;
@@ -670,12 +719,15 @@ async function loadWatchlistPrices() {
       dateEl.style.display = 'none';
       return;
     }
-    if (data[0]?.date) {
-      dateEl.textContent   = fmtDate(data[0].date);
+    const maxDate = data.reduce((mx, r) => r.date > mx ? r.date : mx, '');
+    if (maxDate) {
+      dateEl.textContent   = fmtDate(maxDate);
       dateEl.style.display = 'inline';
     }
     _watchlistData = data;
+    _wlQualLoaded  = true;   // full refresh includes qualitative data
     renderWatchlistTable();
+    _loadLivePrices();
   } catch (e) {
     toast('Error al cargar watchlist: ' + e.message, 'error');
     tbody.innerHTML = '<tr><td colspan="14" class="empty">Error al cargar datos</td></tr>';
@@ -800,7 +852,7 @@ function fmtHistPrice(value, currentPrice) {
   if (diff < 0)    return `<span class="price-down">${formatted}</span>${icon}`;
   if (diff > 0.5)  return `<span class="price-up-far">${formatted}</span>${icon}`;
   if (diff > 0)    return `<span class="price-up">${formatted}</span>${icon}`;
-  return `${formatted}${icon}`;
+  return `<span class="price-at-min">${formatted}</span>${icon}`;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -1089,3 +1141,195 @@ function renderSignalTable() {
     <tbody>${rows}</tbody>
   </table></div>`;
 }
+
+// ── Screener de Oportunidades ─────────────────────────────────────────────────
+
+let _scData          = [];
+let _scSortCol       = 'dist_90d_low';
+let _scSortDir       = 1;
+let _scSectorsLoaded = false;
+
+// S&P 500 GICS sectors — hardcoded so the tab loads instantly
+// Values are the official GICS names (used by Wikipedia S&P 500 list and the API).
+// Labels are the yfinance/Morningstar names the user sees in the Cualitativo view.
+const _SP500_SECTORS = [
+  'Communication Services', 'Consumer Discretionary', 'Consumer Staples',
+  'Energy', 'Financials', 'Health Care', 'Industrials',
+  'Information Technology', 'Materials', 'Real Estate', 'Utilities',
+];
+const _SECTOR_LABELS = {
+  'Information Technology': 'Technology',
+  'Consumer Discretionary': 'Consumer Cyclical',
+  'Consumer Staples':       'Consumer Defensive',
+  'Health Care':            'Healthcare',
+  'Financials':             'Financial Services',
+  'Materials':              'Basic Materials',
+};
+
+async function _initScreener() {
+  if (!_scSectorsLoaded) {
+    _buildSectorDropdown();
+  }
+  // Load cached result for currently selected sector (if any)
+  const sector = document.getElementById('sc-sector').value;
+  if (sector) _loadScreenerCached(sector);
+}
+
+function _buildSectorDropdown() {
+  const sel = document.getElementById('sc-sector');
+  sel.innerHTML = '<option value="">Seleccionar sector…</option>';
+  _SP500_SECTORS.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value       = s;                          // GICS name sent to API
+    opt.textContent = _SECTOR_LABELS[s] || s;     // user-friendly display name
+    sel.appendChild(opt);
+  });
+  sel.onchange = () => {
+    const s = sel.value;
+    document.getElementById('sc-run-btn').disabled = !s;
+    if (s) _loadScreenerCached(s);
+  };
+  _scSectorsLoaded = true;
+
+  // Pre-select first sector that has cached results in Supabase
+  api('/api/screener/cached-sectors').then(cached => {
+    if (!cached.length) return;
+    const first = _SP500_SECTORS.find(s => cached.includes(s));
+    if (first) {
+      sel.value = first;
+      document.getElementById('sc-run-btn').disabled = false;
+      _loadScreenerCached(first);
+    }
+  }).catch(() => {});
+}
+
+async function _loadScreenerCached(sector) {
+  try {
+    const data = await api(`/api/screener/results?sector=${encodeURIComponent(sector)}`);
+    if (data.results && data.results.length > 0) {
+      _scData = data.results;
+      _setScMeta(data.run_at, data.results.length);
+      renderScreenerTable();
+    } else {
+      _scData = [];
+      document.getElementById('sc-meta').style.display = 'none';
+      document.getElementById('sc-body').innerHTML =
+        '<tr><td colspan="10" class="empty">Sin resultados guardados — presiona "Buscar oportunidades"</td></tr>';
+    }
+  } catch (e) {
+    console.error('screener cached:', e);
+  }
+}
+
+async function runScreener() {
+  const sector = document.getElementById('sc-sector').value;
+  if (!sector) return;
+
+  const btn     = document.getElementById('sc-run-btn');
+  const loadBar = document.getElementById('sc-loading');
+  btn.disabled = true;
+  btn.textContent = 'Buscando…';
+  loadBar.style.display = 'block';
+  document.getElementById('sc-meta').style.display = 'none';
+
+  // Animated dots message
+  const tbody = document.getElementById('sc-body');
+  let dots = 0;
+  const timer = setInterval(() => {
+    dots = (dots + 1) % 4;
+    tbody.innerHTML = `<tr><td colspan="10" class="empty sc-loading-msg">
+      Descargando precios de ${esc(sector)}${'·'.repeat(dots || 1)}
+      <span class="sc-loading-hint">puede tardar 30–60s la primera vez</span>
+    </td></tr>`;
+  }, 500);
+
+  try {
+    const data = await api(`/api/screener/run?sector=${encodeURIComponent(sector)}`, { method: 'POST' });
+    _scData = data.results || [];
+    _setScMeta(data.run_at, _scData.length);
+    renderScreenerTable();
+    if (_scData.length === 0) {
+      toast(`Sin oportunidades en ${sector} con los criterios actuales`, 'info');
+    } else {
+      toast(`${_scData.length} oportunidad${_scData.length > 1 ? 'es' : ''} encontrada${_scData.length > 1 ? 's' : ''} en ${sector}`, 'success');
+    }
+  } catch (e) {
+    toast('Error al ejecutar screener: ' + e.message, 'error');
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">Error al buscar — intenta nuevamente</td></tr>';
+  } finally {
+    clearInterval(timer);
+    btn.disabled = false;
+    btn.textContent = 'Buscar oportunidades';
+    loadBar.style.display = 'none';
+  }
+}
+
+function _setScMeta(runAt, count) {
+  const meta    = document.getElementById('sc-meta');
+  const lastRun = document.getElementById('sc-last-run');
+  meta.style.display = 'flex';
+  document.getElementById('sc-count').textContent = `${count} resultado${count !== 1 ? 's' : ''}`;
+
+  if (!runAt) { lastRun.innerHTML = ''; return; }
+
+  const diffDays = Math.floor((Date.now() - new Date(runAt).getTime()) / 86400000);
+  const dateStr  = new Date(runAt).toLocaleDateString('es-CL', { day: 'numeric', month: 'short', year: 'numeric' });
+  const relStr   = _fmtRunAt(runAt);
+
+  if (diffDays >= 7) {
+    lastRun.innerHTML =
+      `<span title="Datos del ${dateStr}">Actualizado ${relStr}</span>` +
+      `<span class="sc-stale-badge">⚠ datos desactualizados · ${dateStr}</span>`;
+  } else {
+    lastRun.textContent = `Actualizado ${relStr}`;
+  }
+}
+
+function setScSort(col) {
+  if (_scSortCol === col) _scSortDir *= -1;
+  else { _scSortCol = col; _scSortDir = 1; }
+  renderScreenerTable();
+}
+
+function renderScreenerTable() {
+  const tbody = document.getElementById('sc-body');
+  if (!_scData.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">Sin resultados</td></tr>';
+    return;
+  }
+
+  let rows = [..._scData];
+  if (_scSortCol) {
+    rows.sort((a, b) => {
+      const va = a[_scSortCol] ?? '';
+      const vb = b[_scSortCol] ?? '';
+      return typeof va === 'number'
+        ? (va - vb) * _scSortDir
+        : String(va).localeCompare(String(vb)) * _scSortDir;
+    });
+  }
+
+  // Color helpers for dist columns
+  const distCls = v => v <= 5 ? 'sc-dist-hot' : v <= 10 ? 'sc-dist-warm' : 'sc-dist-ok';
+  const momCls  = v => v >= 0 ? 'price-up' : v >= -5 ? '' : 'price-down';
+
+  tbody.innerHTML = rows.map(r => `<tr>
+    <td><span class="ticker-chip">${esc(r.ticker)}</span></td>
+    <td>${esc(r.company_name || r.ticker)}</td>
+    <td class="r"><strong>${fmtUSD(r.price)}</strong></td>
+    <td class="r"><span class="${distCls(r.dist_30d_low)}">${r.dist_30d_low != null ? '+' + r.dist_30d_low.toFixed(1) + '%' : '—'}</span></td>
+    <td class="r"><span class="${distCls(r.dist_60d_low)}">${r.dist_60d_low != null ? '+' + r.dist_60d_low.toFixed(1) + '%' : '—'}</span></td>
+    <td class="r"><span class="${distCls(r.dist_90d_low)}">${r.dist_90d_low != null ? '+' + r.dist_90d_low.toFixed(1) + '%' : '—'}</span></td>
+    <td class="r"><span class="${momCls(r.momentum_5d)}">${r.momentum_5d != null ? (r.momentum_5d >= 0 ? '+' : '') + r.momentum_5d.toFixed(1) + '%' : '—'}</span></td>
+    <td class="r muted">${fmtUSD(r.min_30d)}</td>
+    <td class="r muted">${fmtUSD(r.min_60d)}</td>
+    <td class="r muted">${fmtUSD(r.min_90d)}</td>
+  </tr>`).join('');
+
+  // Update sort icons
+  document.querySelectorAll('#sc-table th.sortable').forEach(th => {
+    const icon = th.querySelector('.sort-icon');
+    if (icon) icon.textContent = th.dataset.col === _scSortCol ? (_scSortDir === 1 ? '↑' : '↓') : '';
+  });
+}
+

@@ -20,9 +20,13 @@ from database import (
     ensure_watchlist,
     setup_tables,
     get_price_history_ticker,
+    get_price_history_bulk,
     upsert_price_history,
     save_ml_run,
     get_latest_ml_run,
+    save_screener_results,
+    get_screener_results,
+    get_screener_sectors,
 )
 from gmail_client import fetch_fintual_emails, test_connection
 from datetime import datetime, timezone
@@ -215,10 +219,21 @@ def portfolio():
 @app.get("/api/prices")
 def current_prices():
     try:
-        client = get_client()
-        return get_cached_prices(client)
+        client       = get_client()
+        transactions = get_all_transactions(client)
+        tickers      = list({t["ticker"] for t in transactions if t.get("ticker")})
+        if not tickers:
+            return {}
+        prices = get_prices_bulk(tickers)
+        if prices:
+            set_cached_prices(client, prices)  # persist so restarts have last known value
+            return prices
+        return get_cached_prices(client)       # fallback if yfinance unavailable
     except Exception:
-        return {}
+        try:
+            return get_cached_prices(get_client())
+        except Exception:
+            return {}
 
 
 @app.post("/api/prices/refresh")
@@ -250,50 +265,45 @@ def _portfolio_shares(transactions: list) -> dict:
 
 
 @app.get("/api/watchlist/cached")
-def watchlist_cached(view: str = "watchlist"):
+def watchlist_cached(view: str = "watchlist", qual: bool = False):
     """
-    Fast path: reads from Supabase. Downloads only tickers with zero prior data
-    (e.g. portfolio stocks never seen before). Already-cached tickers are never re-downloaded.
+    Reads from Supabase and incrementally updates stale tickers from yfinance.
+    qual=False (default) skips yfinance .info calls so the page loads instantly.
+    Use /api/watchlist/qual to lazy-load qualitative fields separately.
     """
-    import yfinance as yf
-    import pandas as pd
-    from concurrent.futures import ThreadPoolExecutor
-
     try:
         client  = get_client()
         tickers = _get_tickers_for_view(view, client)
         if not tickers:
             return []
 
-        # Read all cached data in parallel
-        with ThreadPoolExecutor(max_workers=min(len(tickers), 10)) as ex:
-            cached_map = dict(zip(tickers, ex.map(lambda t: get_price_history_ticker(client, t), tickers)))
+        # Get company names from the watchlist table (no yfinance needed)
+        wl_all = get_watchlist(client)
+        company_names = {w["ticker"]: w.get("company_name") or w["ticker"] for w in wl_all}
 
-        closes_dict  = {}
-        need_download = []
+        # Incremental update: downloads only missing days for stale tickers
+        closes_dict = _load_closes(client, tickers, force_update=True)
+
+        return derive_watchlist_data(tickers, closes_dict, qual=qual, company_names=company_names)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/watchlist/qual")
+def watchlist_qual_info(view: str = "watchlist"):
+    """
+    Returns qualitative fields (recommendation, sector, industry, market_cap, etc.)
+    fetched from yfinance for all tickers in the view.
+    Called lazily from the frontend only when the user clicks the qualitative toggle.
+    """
+    try:
+        from watchlist_service import _qualitative_info
+        client  = get_client()
+        tickers = _get_tickers_for_view(view, client)
+        result  = {}
         for ticker in tickers:
-            cached = cached_map[ticker]
-            if len(cached) >= 2:
-                closes_dict[ticker] = cached
-            else:
-                need_download.append(ticker)
-
-        # First-time download for tickers with no data at all
-        if need_download:
-            hist = yf.download(need_download, period="2y", progress=False, auto_adjust=True)
-            if not hist.empty:
-                close_df = hist["Close"]
-                if isinstance(close_df, pd.Series):
-                    close_df = close_df.to_frame(name=need_download[0])
-                for ticker in need_download:
-                    if ticker not in close_df.columns:
-                        continue
-                    closes = close_df[ticker].dropna()
-                    if not closes.empty:
-                        upsert_price_history(client, ticker, closes)
-                        closes_dict[ticker] = closes
-
-        return derive_watchlist_data(tickers, closes_dict)
+            result[ticker] = _qualitative_info(ticker)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -305,6 +315,33 @@ def watchlist_prices(view: str = "watchlist"):
         tickers     = _get_tickers_for_view(view, client)
         closes_dict = _load_closes(client, tickers, force_update=True)
         return derive_watchlist_data(tickers, closes_dict)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/watchlist/live")
+def watchlist_live(view: str = "watchlist"):
+    """Returns {ticker: live_price} using intraday 2-min bars — one bulk yfinance request."""
+    import yfinance as yf
+    import pandas as pd
+    try:
+        client  = get_client()
+        tickers = _get_tickers_for_view(view, client)
+        if not tickers:
+            return {}
+        hist = yf.download(tickers, period="1d", interval="2m", progress=False, auto_adjust=True)
+        if hist.empty:
+            return {}
+        close_df = hist["Close"]
+        if isinstance(close_df, pd.Series):
+            close_df = close_df.to_frame(name=tickers[0])
+        result = {}
+        for ticker in tickers:
+            if ticker in close_df.columns:
+                last = close_df[ticker].dropna()
+                if not last.empty:
+                    result[ticker] = round(float(last.iloc[-1]), 2)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -353,13 +390,11 @@ def _load_closes(client, tickers: list, force_update: bool = False) -> dict:
     import yfinance as yf
     import pandas as pd
     from datetime import date, timedelta
-    from concurrent.futures import ThreadPoolExecutor
 
     today = date.today()
 
-    # 1. Read all cached data from Supabase in parallel
-    with ThreadPoolExecutor(max_workers=min(len(tickers), 10)) as ex:
-        cached_map = dict(zip(tickers, ex.map(lambda t: get_price_history_ticker(client, t), tickers)))
+    # 1. Read all cached data in one bulk query
+    cached_map = get_price_history_bulk(client, tickers)
 
     closes_dict = {}
     need_full = []       # tickers with no history → full 2-year download
@@ -476,6 +511,48 @@ def ml_signal_cached():
         return {"results": results, "metrics": metrics, "run_at": run_at}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/screener/sectors")
+def screener_sectors_list():
+    try:
+        from screener_service import get_sectors
+        return get_sectors()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/screener/run")
+def screener_run(sector: str):
+    try:
+        from screener_service import run_screener
+        client  = get_client()
+        results = run_screener(sector, client)
+        run_at  = save_screener_results(client, sector, results)
+        return {"results": results, "run_at": run_at, "sector": sector, "count": len(results)}
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/screener/results")
+def screener_results_get(sector: str):
+    try:
+        client = get_client()
+        results, run_at = get_screener_results(client, sector)
+        return {"results": results, "run_at": run_at, "sector": sector}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/screener/cached-sectors")
+def screener_cached_sectors():
+    try:
+        client = get_client()
+        return get_screener_sectors(client)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 
 class TickerUpdate(BaseModel):

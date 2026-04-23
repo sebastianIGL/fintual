@@ -316,6 +316,7 @@ main { max-width: 1440px; margin: 0 auto; padding: 22px 28px; }
 .price-down-far { background: var(--red-bg);   color: var(--red);   padding: 1px 6px; border-radius: 4px; font-weight: 600; }
 .price-up       { color: var(--green); }
 .price-up-far   { background: var(--green-bg); color: var(--green); padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+.price-at-min   { background: rgba(210,153,34,0.15); color: #e3b341; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
 
 .close-pct-icon {
   display: inline-flex;
@@ -758,6 +759,74 @@ tbody tr:hover td { background: var(--surface2); }
 .ml-tt-desc  { font-size: 10px; color: var(--muted); opacity: 0.7; line-height: 1.3; max-width: 220px; }
 .ml-tt-val   { font-weight: 600; white-space: nowrap; }
 .ml-tt-sep   { border-top: 1px solid var(--border); margin: 8px 0; }
+
+/* ── Screener de Oportunidades ───────────────────────────────────────────── */
+
+.sc-subtitle {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 4px 0 0;
+  line-height: 1.5;
+}
+
+.sc-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.sc-select {
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 0.85rem;
+  min-width: 220px;
+  cursor: pointer;
+}
+.sc-select:focus { outline: none; border-color: var(--blue); }
+
+.sc-meta {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  font-size: 0.78rem;
+  color: var(--muted);
+  padding: 8px 0 4px;
+}
+#sc-count { font-weight: 600; color: var(--text); }
+.sc-stale-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(210,153,34,0.15);
+  border: 1px solid #d29922;
+  color: #e3b341;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* Dist columns color coding */
+.sc-dist-hot  { color: var(--green); font-weight: 700; }
+.sc-dist-warm { color: #e3b341;      font-weight: 600; }
+.sc-dist-ok   { color: var(--muted); }
+
+td.muted { color: var(--muted); font-size: 0.82rem; }
+
+.sc-loading-msg {
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+}
+.sc-loading-hint {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {

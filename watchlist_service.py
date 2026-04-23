@@ -54,11 +54,13 @@ def _qualitative_info(ticker: str) -> dict:
     }
 
 
-def derive_watchlist_data(tickers: list, closes_dict: dict) -> list:
+def derive_watchlist_data(tickers: list, closes_dict: dict, qual: bool = True, company_names: dict = None) -> list:
     """
     Build the watchlist display rows from pre-loaded closes (Supabase)
     + qualitative info (yfinance per-ticker).
     closes_dict: {ticker: pd.Series with DatetimeIndex}
+    qual: if False, skip yfinance .info calls (fast path — call /api/watchlist/qual later)
+    company_names: {ticker: name} used when qual=False to avoid showing raw tickers
     """
     if not tickers:
         return []
@@ -79,7 +81,21 @@ def derive_watchlist_data(tickers: list, closes_dict: dict) -> list:
             min_60 = float(closes.iloc[-60:].min()) if n >= 2  else None
             min_90 = float(closes.iloc[-90:].min()) if n >= 90 else float(closes.min())
 
-            qual = _qualitative_info(ticker)
+            if qual:
+                q = _qualitative_info(ticker)
+            else:
+                name = (company_names or {}).get(ticker) or ticker
+                q = {
+                    "company_name":   name,
+                    "recommendation": "—",
+                    "sector":         "—",
+                    "industry":       "—",
+                    "country":        "—",
+                    "market_cap":     None,
+                    "div_yield":      None,
+                    "payout_ratio":   None,
+                    "has_dividend":   False,
+                }
 
             results.append({
                 "ticker":    ticker,
@@ -93,7 +109,7 @@ def derive_watchlist_data(tickers: list, closes_dict: dict) -> list:
                 "min_30d":   min_30,
                 "min_60d":   min_60,
                 "min_90d":   min_90,
-                **qual,
+                **q,
             })
         except Exception as e:
             print(f"watchlist_service: error deriving {ticker}: {e}")

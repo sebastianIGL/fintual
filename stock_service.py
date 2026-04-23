@@ -63,26 +63,25 @@ def get_prices_bulk(tickers: list) -> dict:
     try:
         raw = yf.download(
             " ".join(tickers),
-            period="5d",
+            period="1d",
+            interval="2m",
             progress=False,
             auto_adjust=True,
         )
         if not raw.empty:
             close = raw["Close"]
             if len(tickers) == 1:
-                # Single ticker: Close is a plain Series
                 val = close.dropna().iloc[-1] if not close.dropna().empty else None
                 if val is not None:
-                    prices[tickers[0]] = float(val)
+                    prices[tickers[0]] = round(float(val), 2)
             else:
-                # Multiple tickers: Close is a DataFrame with ticker columns
                 last = close.dropna(how="all").iloc[-1]
                 for ticker in tickers:
                     if ticker in last and last[ticker] is not None:
                         import math
                         v = float(last[ticker])
                         if not math.isnan(v):
-                            prices[ticker] = v
+                            prices[ticker] = round(v, 2)
     except Exception as e:
         print(f"Price fetch failed: {e}")
 

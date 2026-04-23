@@ -143,6 +143,39 @@ def get_price_history_ticker(client: Client, ticker: str):
     return pd.Series(vals, index=idx)
 
 
+def get_price_history_bulk(client: Client, tickers: list) -> dict:
+    """Fetch price history for many tickers in ONE query. Returns {ticker: pd.Series}."""
+    import pandas as pd
+    from collections import defaultdict
+
+    if not tickers:
+        return {}
+
+    res = (
+        client.table("price_history")
+        .select("ticker,date,close")
+        .in_("ticker", tickers)
+        .order("date")
+        .limit(500000)
+        .execute()
+    )
+
+    grouped = defaultdict(list)
+    for row in (res.data or []):
+        grouped[row["ticker"]].append((row["date"], float(row["close"])))
+
+    result = {}
+    for ticker in tickers:
+        rows = grouped.get(ticker, [])
+        if rows:
+            idx  = pd.to_datetime([r[0] for r in rows])
+            vals = [r[1] for r in rows]
+            result[ticker] = pd.Series(vals, index=idx)
+        else:
+            result[ticker] = pd.Series(dtype=float)
+    return result
+
+
 def upsert_price_history(client: Client, ticker: str, closes):
     """Upsert daily closes for a ticker (closes is pd.Series with DatetimeIndex)."""
     rows = [
@@ -206,3 +239,37 @@ def get_latest_ml_run(client: Client, model: str) -> tuple:
     )
     metrics = metrics_res.data[0] if metrics_res.data else None
     return results, metrics, latest_at
+
+
+# ── Screener results ──────────────────────────────────────────────────────────
+
+def save_screener_results(client: Client, sector: str, results: list) -> str:
+    """Replace screener results for a sector and return run_at ISO string."""
+    from datetime import datetime, timezone
+    run_at = datetime.now(timezone.utc).isoformat()
+
+    client.table("screener_results").delete().eq("sector", sector).execute()
+    if results:
+        rows = [{"run_at": run_at, **r} for r in results]
+        client.table("screener_results").insert(rows).execute()
+    return run_at
+
+
+def get_screener_results(client: Client, sector: str) -> tuple:
+    """Returns (results_list, run_at_str) for the given sector."""
+    res = (
+        client.table("screener_results")
+        .select("*")
+        .eq("sector", sector)
+        .order("dist_90d_low")
+        .execute()
+    )
+    if not res.data:
+        return [], None
+    return res.data, res.data[0].get("run_at")
+
+
+def get_screener_sectors(client: Client) -> list:
+    """Returns list of sectors that have stored screener results."""
+    res = client.table("screener_results").select("sector").execute()
+    return list({r["sector"] for r in res.data}) if res.data else []

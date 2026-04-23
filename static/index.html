@@ -42,11 +42,12 @@
   </header>
 
   <nav class="tab-nav">
-    <button class="tab-btn active" data-tab="portfolio" onclick="switchTab('portfolio')">Portafolio</button>
-    <button class="tab-btn"        data-tab="futuro"    onclick="switchTab('futuro')">Futuro</button>
+    <button class="tab-btn active" data-tab="portfolio"     onclick="switchTab('portfolio')">Portafolio</button>
+    <button class="tab-btn"        data-tab="futuro"        onclick="switchTab('futuro')">Futuro</button>
+    <button class="tab-btn"        data-tab="oportunidades" onclick="switchTab('oportunidades')">Oportunidades</button>
   </nav>
 
-  <main>
+  <main id="tab-portfolio">
     <div id="loading" class="loading-bar" style="display:none">
       <div class="loading-inner"></div>
     </div>
@@ -273,6 +274,58 @@
       </section>
 
     </div>
+  </main>
+
+  <!-- ── Oportunidades ──────────────────────────────────────────────────── -->
+  <main id="tab-oportunidades" style="display:none">
+    <div id="sc-loading" class="loading-bar" style="display:none">
+      <div class="loading-inner"></div>
+    </div>
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Screener de Oportunidades</h2>
+          <p class="sc-subtitle">
+            Busca acciones del S&amp;P 500 cerca de sus mínimos de 60–90 días con señales de estabilización.
+            Criterios: &lt;15% sobre mínimo 90d · &lt;12% sobre mínimo 60d · momentum 5d &gt;-10%
+          </p>
+        </div>
+        <div class="sc-controls">
+          <select id="sc-sector" class="sc-select">
+            <option value="">Seleccionar sector…</option>
+          </select>
+          <button id="sc-run-btn" class="btn-primary" onclick="runScreener()" disabled>Buscar oportunidades</button>
+        </div>
+      </div>
+
+      <div id="sc-meta" class="sc-meta" style="display:none">
+        <span id="sc-last-run"></span>
+        <span id="sc-count"></span>
+      </div>
+
+      <div class="table-wrap">
+        <table id="sc-table">
+          <thead>
+            <tr>
+              <th class="sortable" data-col="ticker"       onclick="setScSort('ticker')">Ticker <span class="sort-icon"></span></th>
+              <th class="sortable" data-col="company_name" onclick="setScSort('company_name')">Empresa <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="price"        onclick="setScSort('price')">Precio <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="dist_30d_low" onclick="setScSort('dist_30d_low')">Dist. mín 30d <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="dist_60d_low" onclick="setScSort('dist_60d_low')">Dist. mín 60d <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="dist_90d_low" onclick="setScSort('dist_90d_low')">Dist. mín 90d <span class="sort-icon"></span></th>
+              <th class="sortable r" data-col="momentum_5d"  onclick="setScSort('momentum_5d')">Momentum 5d <span class="sort-icon"></span></th>
+              <th class="r">Mín 30d</th>
+              <th class="r">Mín 60d</th>
+              <th class="r">Mín 90d</th>
+            </tr>
+          </thead>
+          <tbody id="sc-body">
+            <tr><td colspan="10" class="empty">Selecciona un sector y presiona "Buscar oportunidades"</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
   </main>
 
   <!-- Tooltip global para modelos ML -->
