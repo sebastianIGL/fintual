@@ -783,9 +783,10 @@ tbody tr:hover td { background: var(--surface2); }
   background: var(--surface2);
   color: var(--text);
   font-size: 0.85rem;
-  min-width: 220px;
+  min-width: 180px;
   cursor: pointer;
 }
+.sc-select:disabled { opacity: 0.45; cursor: default; }
 .sc-select:focus { outline: none; border-color: var(--blue); }
 
 .sc-meta {

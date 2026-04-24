@@ -20,8 +20,8 @@ def _load_sp500() -> pd.DataFrame:
     headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
     html = requests.get(url, headers=headers, timeout=20).text
     tables = pd.read_html(io.StringIO(html))
-    df = tables[0][["Symbol", "Security", "GICS Sector"]].copy()
-    df.columns = ["ticker", "company_name", "sector"]
+    df = tables[0][["Symbol", "Security", "GICS Sector", "GICS Sub-Industry"]].copy()
+    df.columns = ["ticker", "company_name", "sector", "industry"]
     df["ticker"] = df["ticker"].str.replace(".", "-", regex=False)
     _sp500 = df
     return _sp500
@@ -31,9 +31,17 @@ def get_sectors() -> list:
     return sorted(_load_sp500()["sector"].unique().tolist())
 
 
-def _companies_for_sector(sector: str) -> list:
+def get_industries(sector: str) -> list:
     df = _load_sp500()
-    rows = df[df["sector"] == sector][["ticker", "company_name"]]
+    return sorted(df[df["sector"] == sector]["industry"].unique().tolist())
+
+
+def _companies_for_sector(sector: str, industry: str = "") -> list:
+    df = _load_sp500()
+    mask = df["sector"] == sector
+    if industry:
+        mask &= df["industry"] == industry
+    rows = df[mask][["ticker", "company_name", "industry"]]
     return rows.to_dict("records")
 
 
@@ -106,14 +114,16 @@ def _fetch_closes(client, tickers: list) -> dict:
 
 # ── Screener ──────────────────────────────────────────────────────────────────
 
-def run_screener(sector: str, client) -> list:
+def run_screener(sector: str, client, industry: str = "") -> list:
     """
-    Download (or read from cache) prices for all S&P 500 companies in `sector`,
-    apply opportunity criteria, and return matching rows sorted by dist_90d_low.
+    Download (or read from cache) prices for all S&P 500 companies in `sector`
+    (optionally filtered by `industry`), apply opportunity criteria, and return
+    matching rows sorted by dist_90d_low.
     """
-    companies   = _companies_for_sector(sector)
-    tickers     = [c["ticker"] for c in companies]
-    company_map = {c["ticker"]: c["company_name"] for c in companies}
+    companies    = _companies_for_sector(sector, industry)
+    tickers      = [c["ticker"] for c in companies]
+    company_map  = {c["ticker"]: c["company_name"] for c in companies}
+    industry_map = {c["ticker"]: c.get("industry", "") for c in companies}
 
     closes_dict = _fetch_closes(client, tickers)
 
@@ -151,6 +161,7 @@ def run_screener(sector: str, client) -> list:
                 "ticker":       ticker,
                 "company_name": company_map.get(ticker, ticker),
                 "sector":       sector,
+                "industry":     industry_map.get(ticker, ""),
                 "price":        round(price, 2),
                 "dist_30d_low": round(dist_30d * 100, 2),
                 "dist_60d_low": round(dist_60d * 100, 2),

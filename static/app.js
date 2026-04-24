@@ -1115,7 +1115,7 @@ function renderSignalTable() {
 
   const sigClass = key => key === 'buy' ? 'rec-strong-buy' : key === 'sell' ? 'rec-strong-sell' : 'rec-hold';
 
-  const rows = _signals.map(r => {
+  const rows = [..._signals].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0)).map(r => {
     const why   = r.why   || [];
     const probs = r.probs || null;
     const whyEnc   = encodeURIComponent(JSON.stringify(why));
@@ -1170,24 +1170,42 @@ async function _initScreener() {
   if (!_scSectorsLoaded) {
     _buildSectorDropdown();
   }
-  // Load cached result for currently selected sector (if any)
-  const sector = document.getElementById('sc-sector').value;
-  if (sector) _loadScreenerCached(sector);
+  const sector   = document.getElementById('sc-sector').value;
+  const industry = document.getElementById('sc-industry').value;
+  if (sector) _loadScreenerCached(sector, industry);
 }
 
 function _buildSectorDropdown() {
-  const sel = document.getElementById('sc-sector');
+  const sel    = document.getElementById('sc-sector');
+  const selInd = document.getElementById('sc-industry');
   sel.innerHTML = '<option value="">Seleccionar sector…</option>';
   _SP500_SECTORS.forEach(s => {
     const opt = document.createElement('option');
-    opt.value       = s;                          // GICS name sent to API
-    opt.textContent = _SECTOR_LABELS[s] || s;     // user-friendly display name
+    opt.value       = s;
+    opt.textContent = _SECTOR_LABELS[s] || s;
     sel.appendChild(opt);
   });
   sel.onchange = () => {
     const s = sel.value;
     document.getElementById('sc-run-btn').disabled = !s;
-    if (s) _loadScreenerCached(s);
+    // Reset industry dropdown
+    selInd.innerHTML = '<option value="">Todas las industrias</option>';
+    selInd.disabled  = !s;
+    if (s) {
+      api(`/api/screener/industries?sector=${encodeURIComponent(s)}`)
+        .then(industries => {
+          industries.forEach(ind => {
+            const opt = document.createElement('option');
+            opt.value = ind; opt.textContent = ind;
+            selInd.appendChild(opt);
+          });
+        }).catch(() => {});
+      _loadScreenerCached(s, '');
+    }
+  };
+  selInd.onchange = () => {
+    const s = sel.value;
+    if (s) _loadScreenerCached(s, selInd.value);
   };
   _scSectorsLoaded = true;
 
@@ -1198,14 +1216,25 @@ function _buildSectorDropdown() {
     if (first) {
       sel.value = first;
       document.getElementById('sc-run-btn').disabled = false;
-      _loadScreenerCached(first);
+      // Populate industries for pre-selected sector
+      api(`/api/screener/industries?sector=${encodeURIComponent(first)}`)
+        .then(industries => {
+          selInd.disabled = false;
+          industries.forEach(ind => {
+            const opt = document.createElement('option');
+            opt.value = ind; opt.textContent = ind;
+            selInd.appendChild(opt);
+          });
+        }).catch(() => {});
+      _loadScreenerCached(first, '');
     }
   }).catch(() => {});
 }
 
-async function _loadScreenerCached(sector) {
+async function _loadScreenerCached(sector, industry) {
   try {
-    const data = await api(`/api/screener/results?sector=${encodeURIComponent(sector)}`);
+    const url = `/api/screener/results?sector=${encodeURIComponent(sector)}&industry=${encodeURIComponent(industry || '')}`;
+    const data = await api(url);
     if (data.results && data.results.length > 0) {
       _scData = data.results;
       _setScMeta(data.run_at, data.results.length);
@@ -1222,9 +1251,11 @@ async function _loadScreenerCached(sector) {
 }
 
 async function runScreener() {
-  const sector = document.getElementById('sc-sector').value;
+  const sector   = document.getElementById('sc-sector').value;
+  const industry = document.getElementById('sc-industry').value;
   if (!sector) return;
 
+  const label   = industry || (_SECTOR_LABELS[sector] || sector);
   const btn     = document.getElementById('sc-run-btn');
   const loadBar = document.getElementById('sc-loading');
   btn.disabled = true;
@@ -1232,26 +1263,26 @@ async function runScreener() {
   loadBar.style.display = 'block';
   document.getElementById('sc-meta').style.display = 'none';
 
-  // Animated dots message
   const tbody = document.getElementById('sc-body');
   let dots = 0;
   const timer = setInterval(() => {
     dots = (dots + 1) % 4;
     tbody.innerHTML = `<tr><td colspan="10" class="empty sc-loading-msg">
-      Descargando precios de ${esc(sector)}${'·'.repeat(dots || 1)}
+      Descargando precios de ${esc(label)}${'·'.repeat(dots || 1)}
       <span class="sc-loading-hint">puede tardar 30–60s la primera vez</span>
     </td></tr>`;
   }, 500);
 
   try {
-    const data = await api(`/api/screener/run?sector=${encodeURIComponent(sector)}`, { method: 'POST' });
+    const url  = `/api/screener/run?sector=${encodeURIComponent(sector)}&industry=${encodeURIComponent(industry || '')}`;
+    const data = await api(url, { method: 'POST' });
     _scData = data.results || [];
     _setScMeta(data.run_at, _scData.length);
     renderScreenerTable();
     if (_scData.length === 0) {
-      toast(`Sin oportunidades en ${sector} con los criterios actuales`, 'info');
+      toast(`Sin oportunidades en ${label} con los criterios actuales`, 'info');
     } else {
-      toast(`${_scData.length} oportunidad${_scData.length > 1 ? 'es' : ''} encontrada${_scData.length > 1 ? 's' : ''} en ${sector}`, 'success');
+      toast(`${_scData.length} oportunidad${_scData.length > 1 ? 'es' : ''} encontrada${_scData.length > 1 ? 's' : ''} en ${label}`, 'success');
     }
   } catch (e) {
     toast('Error al ejecutar screener: ' + e.message, 'error');

@@ -522,25 +522,34 @@ def screener_sectors_list():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/screener/industries")
+def screener_industries_list(sector: str):
+    try:
+        from screener_service import get_industries
+        return get_industries(sector)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/screener/run")
-def screener_run(sector: str):
+def screener_run(sector: str, industry: str = ""):
     try:
         from screener_service import run_screener
         client  = get_client()
-        results = run_screener(sector, client)
-        run_at  = save_screener_results(client, sector, results)
-        return {"results": results, "run_at": run_at, "sector": sector, "count": len(results)}
+        results = run_screener(sector, client, industry)
+        run_at  = save_screener_results(client, sector, results, industry)
+        return {"results": results, "run_at": run_at, "sector": sector, "industry": industry, "count": len(results)}
     except Exception as e:
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/screener/results")
-def screener_results_get(sector: str):
+def screener_results_get(sector: str, industry: str = ""):
     try:
         client = get_client()
-        results, run_at = get_screener_results(client, sector)
-        return {"results": results, "run_at": run_at, "sector": sector}
+        results, run_at = get_screener_results(client, sector, industry)
+        return {"results": results, "run_at": run_at, "sector": sector, "industry": industry}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

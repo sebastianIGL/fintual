@@ -243,24 +243,26 @@ def get_latest_ml_run(client: Client, model: str) -> tuple:
 
 # ── Screener results ──────────────────────────────────────────────────────────
 
-def save_screener_results(client: Client, sector: str, results: list) -> str:
-    """Replace screener results for a sector and return run_at ISO string."""
+def save_screener_results(client: Client, sector: str, results: list, industry: str = "") -> str:
+    """Replace screener results for a sector+industry and return run_at ISO string."""
     from datetime import datetime, timezone
     run_at = datetime.now(timezone.utc).isoformat()
 
-    client.table("screener_results").delete().eq("sector", sector).execute()
+    q = client.table("screener_results").delete().eq("sector", sector).eq("industry", industry)
+    q.execute()
     if results:
-        rows = [{"run_at": run_at, **r} for r in results]
+        rows = [{"run_at": run_at, "industry": industry, **r} for r in results]
         client.table("screener_results").insert(rows).execute()
     return run_at
 
 
-def get_screener_results(client: Client, sector: str) -> tuple:
-    """Returns (results_list, run_at_str) for the given sector."""
+def get_screener_results(client: Client, sector: str, industry: str = "") -> tuple:
+    """Returns (results_list, run_at_str) for the given sector+industry."""
     res = (
         client.table("screener_results")
         .select("*")
         .eq("sector", sector)
+        .eq("industry", industry)
         .order("dist_90d_low")
         .execute()
     )
